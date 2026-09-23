@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clear Signing Upgradeable Proxies</title>
+<meta name="description" content="How a hardware wallet can clear-sign calls to upgradeable proxies without reading the chain: an EIP-7702 delegate checks an on-chain registry of valid ERC-7730 descriptors.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --surface: #ffffff;
+    --surface-2: #f3f1ec;
+    --text: #1d1c1a;
+    --muted: #625f58;
+    --border: #e2ded5;
+    --accent: #2f5bd3;
+    --accent-soft: #e7edfc;
+    --ok: #1f7a4d;
+    --ok-soft: #e3f3ea;
+    --bad: #b3261e;
+    --bad-soft: #fbe8e6;
+    --warn: #8a5a00;
+    --warn-soft: #fbf1dc;
+    --code-bg: #f5f3ee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413;
+      --surface: #1c1c1a;
+      --surface-2: #242421;
+      --text: #ecebe6;
+      --muted: #a4a198;
+      --border: #34332f;
+      --accent: #7f9ff0;
+      --accent-soft: #1f2a45;
+      --ok: #6cc596;
+      --ok-soft: #173327;
+      --bad: #f08a80;
+      --bad-soft: #3a1c19;
+      --warn: #e2b45c;
+      --warn-soft: #362a12;
+      --code-bg: #1f1f1d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413;
+    --surface: #1c1c1a;
+    --surface-2: #242421;
+    --text: #ecebe6;
+    --muted: #a4a198;
+    --border: #34332f;
+    --accent: #7f9ff0;
+    --accent-soft: #1f2a45;
+    --ok: #6cc596;
+    --ok-soft: #173327;
+    --bad: #f08a80;
+    --bad-soft: #3a1c19;
+    --warn: #e2b45c;
+    --warn-soft: #362a12;
+    --code-bg: #1f1f1d;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; padding: 56px 16px 96px; }
+  header { margin-bottom: 48px; }
+  .eyebrow { color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: .06em; text-transform: uppercase; }
+  h1 { font-size: clamp(30px, 5vw, 42px); line-height: 1.15; margin: 10px 0 16px; letter-spacing: -0.02em; }
+  .lede { font-size: 19px; color: var(--muted); margin: 0; }
+  h2 { font-size: 24px; margin: 64px 0 8px; letter-spacing: -0.01em; }
+  h2 .num { color: var(--muted); font-weight: 500; margin-right: 8px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  p { margin: 12px 0; }
+  a { color: var(--accent); }
+  code, pre { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; font-variant-ligatures: none; }
+  :not(pre) > code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; line-height: 1.55; margin: 12px 0; }
+  .hl { background: var(--accent-soft); color: var(--accent); border-radius: 3px; padding: 0 2px; }
+  .cm { color: var(--muted); }
+
+  ul.req { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 10px; }
+  ul.req li { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px 12px 44px; position: relative; }
+  ul.req li::before { content: ""; position: absolute; left: 16px; top: 19px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--accent); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card h4 { margin: 0 0 6px; font-size: 15px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; }
+  .tag { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; margin-bottom: 8px; }
+  .tag.trusted { background: var(--ok-soft); color: var(--ok); }
+  .tag.untrusted { background: var(--bad-soft); color: var(--bad); }
+  .tag.new { background: var(--accent-soft); color: var(--accent); }
+  .tag.unchanged { background: var(--surface-2); color: var(--muted); }
+
+  .eips { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; margin: 16px 0; background: var(--surface); }
+  .eips div { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 12px 16px; border-top: 1px solid var(--border); font-size: 15px; }
+  .eips div:first-child { border-top: 0; }
+  .eips b { font-weight: 600; }
+  .eips span { color: var(--muted); }
+  @media (max-width: 560px) { .eips div { grid-template-columns: 1fr; gap: 2px; } }
+
+  figure { margin: 20px 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13.5px; padding: 8px 6px 2px; }
+  svg .box { fill: var(--surface-2); stroke: var(--border); stroke-width: 1.5; }
+  svg .box.key { fill: var(--accent-soft); stroke: var(--accent); }
+  svg .t { fill: var(--text); font: 600 13px Inter, system-ui, sans-serif; }
+  svg .s { fill: var(--muted); font: 400 11px Inter, system-ui, sans-serif; }
+  svg .l { fill: var(--muted); font: 500 11px Inter, system-ui, sans-serif; }
+  svg .la { fill: var(--accent); font: 600 11px Inter, system-ui, sans-serif; }
+  svg .ar { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+  svg .ar.a { stroke: var(--accent); }
+  svg .ar.d { stroke-dasharray: 5 4; }
+  svg .head { fill: var(--muted); }
+  svg .head.a { fill: var(--accent); }
+
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 16px 0; }
+  ol.steps > li { counter-increment: s; position: relative; padding: 0 0 18px 48px; }
+  ol.steps > li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; display: grid; place-items: center; font-size: 14px; }
+  ol.steps > li b { display: block; }
+
+  .life { display: grid; gap: 12px; margin: 16px 0; }
+  .life .card { display: grid; grid-template-columns: 110px 1fr; gap: 16px; align-items: start; }
+  .life .card .stage { font-weight: 700; font-size: 15px; }
+  .life .card .stage small { display: block; font-weight: 500; color: var(--muted); font-size: 12px; }
+  .life .card p { color: var(--text); }
+  .life .card code { font-size: 12.5px; }
+  .stage.attest { color: var(--ok); }
+  .stage.use { color: var(--accent); }
+  .stage.invalidate { color: var(--bad); }
+  .stage.reattest { color: var(--warn); }
+  @media (max-width: 560px) { .life .card { grid-template-columns: 1fr; gap: 4px; } }
+
+  .screen { max-width: 340px; margin: 16px 0; background: #111; color: #f2f2f2; border-radius: 14px; padding: 18px 20px; font: 500 14px/1.5 "JetBrains Mono", monospace; border: 1px solid var(--border); }
+  .screen .row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-top: 1px solid #2a2a2a; }
+  .screen .row:first-of-type { border-top: 0; }
+  .screen .title { font-weight: 700; margin-bottom: 8px; }
+  .screen .k { color: #9a9a9a; }
+
+  .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0; }
+  .limits { display: grid; gap: 10px; margin: 16px 0; }
+  .limits .card h4 { display: flex; gap: 8px; align-items: baseline; }
+  footer { margin-top: 72px; color: var(--muted); font-size: 13.5px; border-top: 1px solid var(--border); padding-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <div class="eyebrow">Design note · clear signing</div>
+  <h1>Clear signing upgradeable proxies without reading the chain</h1>
+  <p class="lede">The hardware wallet stays offline, proxies and implementations stay untouched, and a descriptor stops working on chain the moment the code behind it changes.</p>
+</header>
+
+<section>
+  <h2><span class="num">1</span>The problem</h2>
+  <p>ERC-7730 lets a hardware wallet show a human-readable intent for a contract call ("Withdraw 100 USDC to you"), using a descriptor file bound to the contract's address. Upgradeable proxies break the assumption behind it: the address stays the same while the code behind it can change at any time.</p>
+  <p>The device cannot read the chain, and it refreshes its descriptors only periodically (for example every hour). Between an upgrade and the next refresh it would keep showing an intent that may no longer be true.</p>
+</section>
+
+<section>
+  <h2><span class="num">2</span>What's needed</h2>
+  <ul class="req">
+    <li>The hardware wallet makes no chain call. It sees only the descriptor and the transaction to sign.</li>
+    <li>One transaction, one signature.</li>
+    <li>Existing proxies and implementations work unchanged, and the proxy still sees the user as <code>msg.sender</code>.</li>
+    <li>Any proxy type: transparent, UUPS, beacon, diamond.</li>
+    <li>A descriptor must stop working on chain as soon as the code behind it changes, even if a device still holds it.</li>
+  </ul>
+  <div class="callout">The idea: the user's own account checks, at execution time, an on-chain list of descriptors that are valid right now. An attester keeps that list up to date in real time, so the device never needs fresh data.</div>
+</section>
+
+<section>
+  <h2><span class="num">3</span>Standards involved</h2>
+  <div class="eips">
+    <div><b>ERC-7730</b><span>JSON descriptor format for clear signing: maps a function's arguments to labels and formats. Its <code>calldata</code> field format displays a call nested inside another call.</span></div>
+    <div><b>EIP-7702</b><span>Lets an EOA (externally owned account) point its address at contract code with a signed authorization. The account keeps its key, address and balances, and the calls it makes still come from its own address.</span></div>
+    <div><b>EIP-1967 · 1822 · 2535</b><span>Standard proxy layouts: implementation and beacon storage slots (1967), UUPS (1822), diamonds with a facet per function (2535). The watcher reads them to know which code is live.</span></div>
+    <div><b>RFC 8785 (JCS)</b><span>JSON Canonicalization Scheme: one exact byte form for a JSON file, so everyone computes the same hash of a descriptor.</span></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">4</span>Entities</h2>
+  <div class="grid">
+    <div class="card"><span class="tag trusted">trusted</span><h4>Hardware wallet</h4><p>Holds the key. Checks the descriptor against the transaction locally and never reads the chain. Signs EIP-7702 authorizations only for a whitelisted delegate.</p></div>
+    <div class="card"><span class="tag untrusted">untrusted</span><h4>Companion app</h4><p>The host software (desktop or browser wallet). Builds the transaction, fetches nonce and fees, broadcasts.</p></div>
+    <div class="card"><span class="tag unchanged">unchanged</span><h4>User account (EOA)</h4><p>Holds the funds. Delegated once, through EIP-7702, to the delegate contract below.</p></div>
+    <div class="card"><span class="tag unchanged">unchanged</span><h4>Protocol</h4><p>Its proxy and implementation, as deployed today. Publishes an ERC-7730 file for the proxy, as today.</p></div>
+    <div class="card"><span class="tag trusted">trusted</span><h4>Attester</h4><p>Audits the implementation, signs the descriptor, and runs a watcher that detects implementation changes every block.</p></div>
+    <div class="card"><span class="tag new">new contract</span><h4>Registry</h4><p>On-chain list of descriptor hashes that are valid right now, one per chain. Only the attester writes to it.</p></div>
+    <div class="card"><span class="tag new">new contract</span><h4>Delegate</h4><p>The code the user's account runs. Checks the registry, then calls the proxy from the user's own address.</p></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">5</span>How a call flows</h2>
+  <figure>
+    <svg viewBox="0 0 760 290" role="img" aria-label="Call path: hardware wallet signs a transaction from the user account to itself; the account's delegate code checks the registry, then calls the proxy, which delegatecalls the implementation. The attester's watcher watches the proxy and writes to the registry.">
+      <defs>
+        <marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+        <marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head a" d="M0,0 L10,5 L0,10 z"/></marker>
+      </defs>
+      <rect class="box" x="10" y="50" width="140" height="64" rx="10"/>
+      <text class="t" x="80" y="78" text-anchor="middle">Hardware wallet</text>
+      <text class="s" x="80" y="96" text-anchor="middle">offline, signs 1 tx</text>
+
+      <rect class="box key" x="205" y="50" width="150" height="64" rx="10"/>
+      <text class="t" x="280" y="78" text-anchor="middle">User account</text>
+      <text class="s" x="280" y="96" text-anchor="middle">EOA + delegate code</text>
+
+      <rect class="box" x="410" y="50" width="140" height="64" rx="10"/>
+      <text class="t" x="480" y="78" text-anchor="middle">Proxy</text>
+      <text class="s" x="480" y="96" text-anchor="middle">unchanged</text>
+
+      <rect class="box" x="605" y="50" width="145" height="64" rx="10"/>
+      <text class="t" x="677" y="78" text-anchor="middle">Implementation</text>
+      <text class="s" x="677" y="96" text-anchor="middle">can be upgraded</text>
+
+      <rect class="box key" x="205" y="205" width="150" height="64" rx="10"/>
+      <text class="t" x="280" y="233" text-anchor="middle">Registry</text>
+      <text class="s" x="280" y="251" text-anchor="middle">valid descriptor hashes</text>
+
+      <rect class="box" x="410" y="205" width="140" height="64" rx="10"/>
+      <text class="t" x="480" y="233" text-anchor="middle">Attester watcher</text>
+      <text class="s" x="480" y="251" text-anchor="middle">off chain, real time</text>
+
+      <path class="ar" d="M150 82 H201" marker-end="url(#h)"/>
+      <text class="l" x="177" y="42" text-anchor="middle">signed tx</text>
+      <text class="l" x="177" y="55" text-anchor="middle">to itself</text>
+
+      <path class="ar a" d="M280 114 V201" marker-end="url(#ha)"/>
+      <text class="la" x="290" y="155">1. isValid(proxy,</text>
+      <text class="la" x="290" y="169">descriptorHash)?</text>
+
+      <path class="ar a" d="M355 82 H406" marker-end="url(#ha)"/>
+      <text class="la" x="382" y="42" text-anchor="middle">2. call</text>
+      <text class="la" x="382" y="55" text-anchor="middle">as user</text>
+
+      <path class="ar" d="M550 82 H601" marker-end="url(#h)"/>
+      <text class="l" x="577" y="42" text-anchor="middle">delegate-</text>
+      <text class="l" x="577" y="55" text-anchor="middle">call</text>
+
+      <path class="ar d" d="M480 205 V118" marker-end="url(#h)"/>
+      <text class="l" x="490" y="155">watches which</text>
+      <text class="l" x="490" y="169">code is live</text>
+
+      <path class="ar" d="M410 237 H359" marker-end="url(#h)"/>
+      <text class="l" x="384" y="228" text-anchor="middle">set</text>
+    </svg>
+    <figcaption>Accent: the new pieces and the check that makes a stale descriptor fail on chain.</figcaption>
+  </figure>
+  <ol class="steps">
+    <li><b>The companion app builds the transaction.</b> It is sent from the user's account to the user's account, with data <code>execute(proxy, descriptorHash, withdrawCalldata)</code>.</li>
+    <li><b>The device checks it locally.</b> The transaction is a call to its own address; <code>descriptorHash</code> is the hash of the descriptor it holds; that descriptor is signed by a trusted attester and bound to this proxy and chain. Then it displays the inner call as usual.</li>
+    <li><b>On chain, the delegate code checks the registry.</b> If <code>registry.isValid(proxy, descriptorHash)</code> is false, the transaction reverts before the proxy is ever called.</li>
+    <li><b>Otherwise the user's account calls the proxy.</b> The proxy sees <code>msg.sender</code> = the user and delegatecalls the implementation, exactly as a direct call would.</li>
+  </ol>
+</section>
+
+<section>
+  <h2><span class="num">6</span>Descriptor lifecycle</h2>
+  <p>The registry stores one flag per proxy and descriptor hash:</p>
+  <pre><code>mapping(address target =&gt; mapping(bytes32 descriptorHash =&gt; bool)) public isValid;</code></pre>
+  <div class="life">
+    <div class="card"><div class="stage attest">Attest<small>once per audit</small></div><p>After the audit, the attester's watcher calls <code>registry.set(proxy, [hash], true)</code> and records a fingerprint of the live implementation: the implementation slot, the beacon or the diamond facets, and their code hashes.</p></div>
+    <div class="card"><div class="stage use">Use<small>every transaction</small></div><p>The delegate reads <code>registry.isValid(proxy, hash)</code>. If it is false, the transaction reverts with <code>DescriptorNotValid</code> before the proxy is called.</p></div>
+    <div class="card"><div class="stage invalidate">Invalidate<small>real time</small></div><p>The watcher recomputes the fingerprint every block. As soon as it differs (an upgrade happened), it sends <code>registry.set(proxy, [hash], false)</code>. From that block on, every transaction built from that descriptor reverts, whatever the devices have cached.</p></div>
+    <div class="card"><div class="stage reattest">Re-attest<small>after re-audit</small></div><p>After auditing the new implementation, the attester sets the new file's hash to <code>true</code>. The old hash stays <code>false</code>, so a device still holding the old file can never pass again.</p></div>
+  </div>
+  <p>Only the attester's address can call <code>set</code>. It can also revoke a hash by hand, for example if a descriptor turns out to be wrong.</p>
+</section>
+
+<section>
+  <h2><span class="num">7</span>Minimal example</h2>
+  <h3>The protocol's descriptor: plain ERC-7730, unchanged</h3>
+  <pre><code>{
+  "context": { "contract": { "deployments": [{ "chainId": 1, "address": "0xVaultProxy" }] } },
+  "metadata": { "owner": "Example Vault" },
+  "display": { "formats": {
+    "withdraw(address token,uint256 amount,address to)": {
+      "intent": "Withdraw from vault",
+      "fields": [
+        { "path": "amount", "label": "Amount", "format": "tokenAmount", "params": { "tokenPath": "token" } },
+        { "path": "to", "label": "Recipient", "format": "addressName" }
+      ]
+    }
+  }}
+}</code></pre>
+  <p class="cm">Its hash is <code>keccak256(JCS(file))</code>. That value goes into the registry and into the transaction.</p>
+
+  <h3>The delegate's descriptor: one new parameter</h3>
+  <pre><code>{
+  "context": { "contract": { "deployments": [{ "chainId": 1, "address": "0xClearSignDelegate" }] } },
+  "display": { "formats": {
+    "execute(address target,bytes32 descriptorHash,bytes data)": {
+      "intent": "Verified call",
+      "fields": [{
+        "path": "data", "label": "Action", "format": "calldata",
+        "params": {
+          "calleePath": "target",
+          "amountPath": "@.value",
+          <span class="hl">"descriptorHashPath": "descriptorHash"</span>
+        }
+      }]
+    }
+  }}
+}</code></pre>
+  <p class="cm"><code>calldata</code>, <code>calleePath</code> and <code>amountPath</code> are standard ERC-7730. The highlighted parameter is the only addition: the file used to display the inner call must hash to that argument.</p>
+
+  <h3>The transaction</h3>
+  <pre><code>from: 0xUser
+to:   0xUser                         <span class="cm">// the user's own account, running the delegate code</span>
+data: execute(
+        target         = 0xVaultProxy,
+        descriptorHash = keccak256(JCS(vault descriptor)),
+        data           = withdraw(USDC, 100000000, 0xUser))</code></pre>
+
+  <h3>What the device shows</h3>
+  <div class="screen">
+    <div class="title">Withdraw from vault</div>
+    <div class="row"><span class="k">Amount</span><span>100 USDC</span></div>
+    <div class="row"><span class="k">Recipient</span><span>0xUser…</span></div>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">8</span>Limits and cost</h2>
+  <div class="limits">
+    <div class="card"><h4>Watcher latency</h4><p>A transaction that lands after an upgrade but before the revocation still executes. The exposure window is the watcher's reaction time (a block or two), not the device's hourly refresh.</p></div>
+    <div class="card"><h4>Same-block upgrade</h4><p>Someone holding the upgrade key who controls transaction ordering can place the upgrade right before a victim's transaction in the same block. Beacon and diamond proxies can close this with a live check in the delegate (<code>implementation()</code>, <code>facetAddress()</code>). EIP-1967 proxies need a short upgrade delay, because another contract cannot read their implementation slot.</p></div>
+    <div class="card"><h4>Gas</h4><p>About 10.5k extra gas per transaction (measured): roughly +7% on a typical 150k gas DeFi call. Merging the registry into the delegate contract would save about 2.6k of it.</p></div>
+    <div class="card"><h4>Delegation</h4><p>The account delegates to the delegate contract, so it must be audited and whitelisted by wallet vendors. An EOA has one EIP-7702 delegation at a time.</p></div>
+    <div class="card"><h4>Scope of the watcher</h4><p>It sees code changes. Behaviour changes through admin setters with the same code (fees, oracles, recipients) need monitoring too.</p></div>
+    <div class="card"><h4>Key management</h4><p>The attester key that writes the registry is used on every chain in real time, so it is a hot key.</p></div>
+  </div>
+</section>
+
+<footer>A Foundry and TypeScript prototype tests this end to end on transparent, UUPS, beacon and diamond proxies, including honest and malicious upgrades, stale descriptors and the same-block race.</footer>
+
+</main>
+</body>
+</html>

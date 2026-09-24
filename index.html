@@ -149,6 +149,13 @@
   .tldr h2 { margin: 16px 0 4px; font-size: 18px; color: var(--accent); }
   .tldr ol { margin: 8px 0; padding-left: 20px; }
   .tldr li { margin: 6px 0; }
+  .grid.two { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  table.matrix { width: 100%; border-collapse: separate; border-spacing: 0; margin: 16px 0; font-size: 14.5px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  table.matrix th, table.matrix td { padding: 10px 14px; text-align: left; border-top: 1px solid var(--border); }
+  table.matrix thead th { border-top: 0; color: var(--muted); font-weight: 600; font-size: 13px; }
+  table.matrix tbody th { font-weight: 600; }
+  table.matrix td.yes { color: var(--ok); background: var(--ok-soft); font-weight: 500; }
+  table.matrix td.no { color: var(--bad); background: var(--bad-soft); font-weight: 500; }
   .callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0; }
   .limits { display: grid; gap: 10px; margin: 16px 0; }
   .limits .card h4 { display: flex; gap: 8px; align-items: baseline; }
@@ -171,6 +178,7 @@
     <li>The user delegates their EOA once, via EIP-7702, to a small audited delegate contract.</li>
     <li>To clear-sign, the user's account calls itself. The delegate code checks the registry for the descriptor the device displayed, then calls the proxy as the user.</li>
     <li>If the proxy was upgraded, the transaction reverts on chain, even if the device still holds the old descriptor.</li>
+    <li>Users without EIP-7702 get the same check through an ERC-2771 forwarder, for protocols that upgrade their implementation to trust it. Both routes can ship together.</li>
   </ol>
 </section>
 
@@ -197,6 +205,7 @@
   <div class="eips">
     <div><b>ERC-7730</b><span>JSON descriptor format for clear signing: maps a function's arguments to labels and formats. Its <code>calldata</code> field format displays a call nested inside another call.</span></div>
     <div><b>EIP-7702</b><span>Lets an EOA (externally owned account) point its address at contract code with a signed authorization. The account keeps its key, address and balances, and the calls it makes still come from its own address.</span></div>
+    <div><b>ERC-2771</b><span>Meta-transactions: a trusted forwarder calls a contract with the original sender's address appended to the calldata, and the contract reads it with <code>_msgSender()</code>. Used here as the alternative to EIP-7702.</span></div>
     <div><b>EIP-1967 · 1822 · 2535</b><span>Standard proxy layouts: implementation and beacon storage slots (1967), UUPS (1822), diamonds with a facet per function (2535). The watcher reads them to know which code is live.</span></div>
     <div><b>RFC 8785 (JCS)</b><span>JSON Canonicalization Scheme: one exact byte form for a JSON file, so everyone computes the same hash of a descriptor.</span></div>
   </div>
@@ -281,7 +290,30 @@
 </section>
 
 <section>
-  <h2><span class="num">6</span>Descriptor lifecycle</h2>
+  <h2><span class="num">6</span>Two entry points, one check</h2>
+  <p>The check has to run outside the implementation, and the proxy still has to see the user as <code>msg.sender</code>. There are two ways to get both, and they can ship together: the same registry check behind two entry points.</p>
+  <div class="grid two">
+    <div class="card"><span class="tag new">EIP-7702 delegate</span><h4>Every proxy, for users on 7702</h4><p>The route described above. The user's account runs the delegate code and calls the proxy itself. Proxies and implementations stay exactly as they are. Needs the user to delegate their account, on a chain that supports EIP-7702.</p></div>
+    <div class="card"><span class="tag new">ERC-2771 forwarder</span><h4>Every user, for protocols that opt in</h4><p>The user calls a canonical forwarder contract. It runs the same registry check, then calls the proxy with the user's address appended to the calldata, and the implementation reads the user with <code>_msgSender()</code>. Works for plain EOAs and smart accounts, but only for protocols whose implementation trusts the forwarder: one implementation upgrade, the proxy stays in place.</p></div>
+  </div>
+  <p>Shipped together, the coverage is the union. The wallet picks the route per transaction:</p>
+  <table class="matrix">
+    <thead><tr><th></th><th>Protocol trusts the forwarder</th><th>Protocol unchanged</th></tr></thead>
+    <tbody>
+      <tr><th>User account on 7702</th><td class="yes">Clear signing (either route)</td><td class="yes">Clear signing (delegate)</td></tr>
+      <tr><th>Plain EOA</th><td class="yes">Clear signing (forwarder)</td><td class="no">Blind signing</td></tr>
+    </tbody>
+  </table>
+  <p>The forwarder gets its own ERC-7730 file, identical to the delegate's except that it is bound to the forwarder's address. Two hazards come with the ERC-2771 route:</p>
+  <ul>
+    <li><b>One forwarder, many protocols.</b> A bug in the canonical forwarder would expose every protocol that trusts it, so it must be tiny, immutable and audited.</li>
+    <li><b>ERC-2771 combined with multicall.</b> Together they let callers spoof <code>msg.sender</code> (the December 2023 incident, fixed in OpenZeppelin 4.9.4 and 5.0.1). A protocol adopting the forwarder must use a patched multicall or none.</li>
+  </ul>
+  <p>The bottom-right cell cannot be closed. For a plain EOA to stay <code>msg.sender</code> without EIP-7702, the transaction has to go straight to the proxy, and then the only code that runs is the proxy and the implementation that just changed. Nothing outside the upgrader's control is left to perform the check.</p>
+</section>
+
+<section>
+  <h2><span class="num">7</span>Descriptor lifecycle</h2>
   <p>The registry stores one flag per proxy and descriptor hash:</p>
   <pre><code>mapping(address target =&gt; mapping(bytes32 descriptorHash =&gt; bool)) public isValid;</code></pre>
   <div class="life">
@@ -294,7 +326,7 @@
 </section>
 
 <section>
-  <h2><span class="num">7</span>Minimal example</h2>
+  <h2><span class="num">8</span>Minimal example</h2>
   <h3>The protocol's descriptor: plain ERC-7730, unchanged</h3>
   <pre><code>{
   "context": { "contract": { "deployments": [{ "chainId": 1, "address": "0xVaultProxy" }] } },
@@ -347,7 +379,7 @@ data: execute(
 </section>
 
 <section>
-  <h2><span class="num">8</span>Limits and cost</h2>
+  <h2><span class="num">9</span>Limits and cost</h2>
   <div class="limits">
     <div class="card"><h4>Watcher latency</h4><p>A transaction that lands after an upgrade but before the revocation still executes. The exposure window is the watcher's reaction time (a block or two), not the device's hourly refresh.</p></div>
     <div class="card"><h4>Same-block upgrade</h4><p>Someone holding the upgrade key who controls transaction ordering can place the upgrade right before a victim's transaction in the same block. Beacon and diamond proxies can close this with a live check in the delegate (<code>implementation()</code>, <code>facetAddress()</code>). EIP-1967 proxies need a short upgrade delay, because another contract cannot read their implementation slot.</p></div>
